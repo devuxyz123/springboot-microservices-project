@@ -30,22 +30,26 @@ public class OrderController {
     private final StreamBridge streamBridge;
     private final ExecutorService traceableExecutorService;
 
-    @PostMapping
+     @PostMapping
     public String placeOrder(@RequestBody OrderDto orderDto) {
         circuitBreakerFactory.configureExecutorService(traceableExecutorService);
         Resilience4JCircuitBreaker circuitBreaker = circuitBreakerFactory.create("inventory");
-        java.util.function.Supplier<Boolean> booleanSupplier = () -> orderDto.getOrderLineItemsList().stream()
-                .allMatch(lineItem -> {
-                    log.info("Making Call to Inventory Service for SkuCode {}", lineItem.getSkuCode());
-                    return inventoryClient.checkStock(lineItem.getSkuCode());
-                });
+        java.util.function.Supplier<Boolean> booleanSupplier = () -> {
+            return Optional.ofNullable(orderDto.getOrderLineItemsList())
+                    .orElseThrow(() -> new NullPointerException("Order line items list is null"))
+                    .stream()
+                    .allMatch(lineItem -> {
+                        log.info("Making Call to Inventory Service for SkuCode {}", lineItem.getSkuCode());
+                        return inventoryClient.checkStock(lineItem.getSkuCode());
+                    });
+        };
         boolean productsInStock = circuitBreaker.run(booleanSupplier, throwable -> handleErrorCase());
-
+    
         if (productsInStock) {
             Order order = new Order();
             order.setOrderLineItems(orderDto.getOrderLineItemsList());
             order.setOrderNumber(UUID.randomUUID().toString());
-
+    
             orderRepository.save(order);
             log.info("Sending Order Details with Order Id {} to Notification Service", order.getId());
             streamBridge.send("notificationEventSupplier-out-0", MessageBuilder.withPayload(order.getId()).build());
